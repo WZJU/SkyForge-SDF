@@ -1,0 +1,32 @@
+{
+  "VspAircraft": {
+    "sdf": "path_to_sdf_file",
+    "model": "model_file_path",
+    "mesh": "mesh_file_path",
+    "cfd": "proj_file_path",
+    "case0": {
+      "path": "case1.plt",
+      "Mach": 0.75,
+      "AOA": 1,
+      "cl": 0.1,
+      "cd": 0.05,
+      "cm": 0.01
+    },
+    "case1": {
+      "path": "case2.plt",
+      "Mach": 0.8,
+      "AOA": 3,
+      "cl": 0.5,
+      "cd": 0.058,
+      "cm": 0.05
+    },
+    "case2": {
+      "path": "case3.plt",
+      "Mach": 0.85,
+      "AOA": 5,
+      "cl": 0.9,
+      "cd": 0.06,
+      "cm": 0.06
+    }
+  }
+}
