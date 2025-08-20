@@ -4,9 +4,9 @@ import os
 import json
 from pathlib import Path
 
-def scale(mesh, target_max=0.5, target_min=-0.5, axis=0):
-    current_min = mesh.bounds[0][axis]
-    current_max = mesh.bounds[1][axis]
+def scale(mesh, target_max=0.5, target_min=-0.5):
+    current_min = mesh.bounds[0][0]
+    current_max = mesh.bounds[1][0]
     current_span = current_max - current_min
 
     # 计算缩放比例（保持其他轴比例）
@@ -15,16 +15,18 @@ def scale(mesh, target_max=0.5, target_min=-0.5, axis=0):
 
     # 构建缩放矩阵（仅缩放目标轴）
     scale_matrix = np.eye(4)
-    scale_matrix[axis, axis] = scale_factor
+    scale_matrix[:3, :3] *= scale_factor
 
     # 应用缩放
     mesh.apply_transform(scale_matrix)
 
-    # 平移到目标区间中心
+     # 计算平移量（使所有轴居中）
     translated_center = (target_min + target_max) / 2
-    current_center = mesh.bounds.mean(axis=0)[axis]
+    current_center = mesh.bounds.mean(axis=0)
     translation = translated_center - current_center
-    mesh.apply_translation([translation if i == axis else 0 for i in range(3)])
+    
+    # 应用平移
+    mesh.apply_translation(translation)
     return mesh
 
 def calculate_sdf(mesh, point):
@@ -62,9 +64,9 @@ def spherical_shell_sampling(mesh, num_points=100000, layers=5):
 def uniform_grid_samples(mesh, resolution=50):
     """在网格包围盒内生成均匀网格点"""
     bounds = mesh.bounds
-    x = np.linspace(bounds[0][0]-0.1, bounds[1][0]+0.1, resolution)
-    y = np.linspace(bounds[0][1]-0.1, bounds[1][1]+0.1, resolution)
-    z = np.linspace(bounds[0][2]-0.1, bounds[1][2]+0.1, resolution)
+    x = np.linspace(-1.1, 1.1, resolution)
+    y = np.linspace(-1.1, 1.1, resolution)
+    z = np.linspace(-1.1, 1.1, resolution)
     xx, yy, zz = np.meshgrid(x, y, z)
     return np.vstack([xx.ravel(), yy.ravel(), zz.ravel()]).T
 
@@ -100,7 +102,7 @@ def surface_biased_samples(mesh, num_points=10000, std_dev=0.1):
     offsets = np.random.normal(scale=std_dev, size=(num_points, 3))
     return surface_points + offsets * normals
 
-def hybrid_sampling(mesh, grid_res=30, surface_points=20000, std_dev=0.2):
+def hybrid_sampling(mesh, grid_res=35, surface_points=20000, std_dev=0.2):
     """混合均匀网格和表面扰动采样"""
     uniform = uniform_grid_samples(mesh, grid_res)
     surface = surface_biased_samples(mesh, surface_points, std_dev)
@@ -125,7 +127,7 @@ def compute_sdf_trimesh(mesh, points):
     sdf = trimesh.proximity.signed_distance(mesh, points)
     return sdf*flag
 
-def compute_sdf_from_single_object(path, num_points=20000):
+def compute_sdf_from_single_object(path, num_points=20000, sampling='hybrid', std_dev=0.1, axis_correction=[[1,0,0],[0,1,0],[0,0,1]]):
     """
     从单个对象文件计算SDF
     :param path: 对象文件路径
@@ -134,9 +136,40 @@ def compute_sdf_from_single_object(path, num_points=20000):
     mesh = trimesh.load(path, force='mesh', repair=True)
     mesh = scale(mesh)  # 缩放到[-0.5, 0.5]区间 
     #points = spherical_shell_sampling(mesh, num_points=num_points, layers=5)
-    points = hybrid_sampling(mesh, grid_res=30, surface_points=num_points, std_dev=0.2)
+    if sampling=='mesh':
+        points = uniform_grid_samples(mesh, resolution=50)
+    elif sampling=='surface':
+        points = surface_biased_samples(mesh, num_points=num_points, std_dev=std_dev)
+    else:
+        points = hybrid_sampling(mesh, grid_res=30, surface_points=num_points, std_dev=std_dev)
     sdf_values = compute_sdf_trimesh(mesh, points)
-    return points, sdf_values
+    ret_points = np.zeros_like(points)
+    for target_axis in range(3):
+        for origin_axis in range(3):
+            ret_points[:,target_axis] += points[:,origin_axis] * axis_correction[target_axis][origin_axis]
+
+    return ret_points, sdf_values
+
+def compute_sdf_from_single_mesh(mesh, num_points=20000, sampling='hybrid', std_dev=0.1, axis_correction=[[1,0,0],[0,1,0],[0,0,1]]):
+    """
+    从单个对象文件计算SDF
+    :param path: 对象文件路径
+    :return: (N,3) 的采样点和对应的SDF值
+    """
+    mesh = scale(mesh)  # 缩放到[-0.5, 0.5]区间 
+    #points = spherical_shell_sampling(mesh, num_points=num_points, layers=5)
+    if sampling=='mesh':
+        points = uniform_grid_samples(mesh, resolution=50)
+    elif sampling=='surface':
+        points = surface_biased_samples(mesh, num_points=num_points, std_dev=std_dev)
+    else:
+        points = hybrid_sampling(mesh, grid_res=30, surface_points=num_points, std_dev=std_dev)
+    sdf_values = compute_sdf_trimesh(mesh, points)
+    ret_points = np.zeros_like(points)
+    for target_axis in range(3):
+        for origin_axis in range(3):
+            ret_points[:,target_axis] += points[:,origin_axis] * axis_correction[target_axis][origin_axis]
+    return ret_points, sdf_values
 
 class Manifold:
     def __init__(self, path_to_manifold):
@@ -278,11 +311,6 @@ class taxonomy_editor():
         """
         self.add_key(name, 'sdf', value=sdf_file_path)
                             
-
-
-
-
-        
 
 
 if __name__ == "__main__":
