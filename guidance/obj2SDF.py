@@ -3,6 +3,7 @@ import numpy as np
 import os
 import json
 from pathlib import Path
+import point_cloud_utils as pcu
 
 def scale(mesh, target_max=0.5, target_min=-0.5):
     current_min = mesh.bounds[0][0]
@@ -61,7 +62,7 @@ def spherical_shell_sampling(mesh, num_points=100000, layers=5):
     
     return np.vstack(points)
 
-def uniform_grid_samples(mesh, resolution=50):
+def uniform_grid_samples(mesh, resolution=35):
     """在网格包围盒内生成均匀网格点"""
     bounds = mesh.bounds
     x = np.linspace(-1.1, 1.1, resolution)
@@ -77,32 +78,35 @@ def uniform_grid_samples(mesh, resolution=50):
 #     offsets = np.random.normal(scale=std_dev, size=(num_points, 3))
 #     return surface_points + offsets * normals
 
+def random_unit_vectors(n):
+    vec = np.random.normal(size=(n, 3))   # 从正态分布采样
+    vec /= np.linalg.norm(vec, axis=1)[:, None]  # 归一化
+    return vec
 
-def surface_biased_samples(mesh, num_points=10000, std_dev=0.1):
-    """生成表面扰动采样点（自动处理顶点不足的情况）"""
+def surface_biased_samples(mesh, num_points=80000, std_dev=0.007):
+    """
+    生成表面扰动采样点（自动处理顶点不足的情况）
+    重建时分辨率为512，点间距约0.003，因此选用标准差0.007使得表面点数较多
+    """
     # 获取表面点（数量不超过顶点数）
-    max_samples = len(mesh.vertices)
-    actual_samples = min(num_points, max_samples)
-    surface_points = mesh.sample(actual_samples)
+    surface_points = mesh.sample(num_points)
     
-    # 重复采样直到达到目标点数（可选）
-    if actual_samples < num_points:
-        repeat = num_points // actual_samples + 1
-        surface_points = np.tile(surface_points, (repeat, 1))[:num_points]
+    # # 获取法线（需确保法线已计算）
+    # if not hasattr(mesh, 'vertex_normals') or len(mesh.vertex_normals) == 0:
+    #     mesh.compute_vertex_normals()
     
-    # 获取法线（需确保法线已计算）
-    if not hasattr(mesh, 'vertex_normals') or len(mesh.vertex_normals) == 0:
-        mesh.compute_vertex_normals()
-    
-    # 为每个采样点分配法线（通过最近顶点）
-    _, vertex_ids = mesh.nearest.vertex(surface_points)
-    normals = mesh.vertex_normals[vertex_ids]
+    # # 为每个采样点分配法线（通过最近顶点）
+    # _, vertex_ids = mesh.nearest.vertex(surface_points)
+    # normals = mesh.vertex_normals[vertex_ids]
+
+    # 随机角度作为法向
+    normals = random_unit_vectors(num_points)
     
     # 添加法线方向扰动
     offsets = np.random.normal(scale=std_dev, size=(num_points, 3))
     return surface_points + offsets * normals
 
-def hybrid_sampling(mesh, grid_res=35, surface_points=20000, std_dev=0.2):
+def hybrid_sampling(mesh, grid_res=35, surface_points=80000, std_dev=0.2): #70% Surface, 30% grid
     """混合均匀网格和表面扰动采样"""
     uniform = uniform_grid_samples(mesh, grid_res)
     surface = surface_biased_samples(mesh, surface_points, std_dev)
@@ -119,15 +123,21 @@ def compute_sdf_trimesh(mesh, points):
     if not mesh.is_watertight:
         mesh.fill_holes()  # 尝试自动修复
     
-    if mesh.volume>0:
+    vm = mesh.vertices
+    fm = mesh.faces
+    
+    if mesh.volume>0: # SDF in the geometry is positive, while outside is negative (trimesh and pcu have different sign convention)
         flag = -1
     else:
         flag = 1
     # 计算符号距离
-    sdf = trimesh.proximity.signed_distance(mesh, points)
+    # sdf = trimesh.proximity.signed_distance(mesh, points)
+    sdf, _, _ = pcu.signed_distance_to_mesh(points, vm, fm)
     return sdf*flag
 
-def compute_sdf_from_single_object(path, num_points=20000, sampling='hybrid', std_dev=0.1, axis_correction=[[1,0,0],[0,1,0],[0,0,1]]):
+def compute_sdf_from_single_object(path, num_points=20000, sampling='hybrid', std_dev=0.1, axis_correction=[[1,0,0],  #new x = [x,y,z] * [1,0,0]
+                                                                                                            [0,1,0],  #new y = [x,y,z] * [0,1,0]
+                                                                                                            [0,0,1]]):
     """
     从单个对象文件计算SDF
     :param path: 对象文件路径
@@ -150,7 +160,9 @@ def compute_sdf_from_single_object(path, num_points=20000, sampling='hybrid', st
 
     return ret_points, sdf_values
 
-def compute_sdf_from_single_mesh(mesh, num_points=20000, sampling='hybrid', std_dev=0.1, axis_correction=[[1,0,0],[0,1,0],[0,0,1]]):
+def compute_sdf_from_single_mesh(mesh, num_points=20000, sampling='hybrid', reso = 50, std_dev=0.1, axis_correction=[[1,0,0], #new x = [x,y,z] * [1,0,0]
+                                                                                                          [0,1,0], #new y = [x,y,z] * [0,1,0]
+                                                                                                          [0,0,1]]):
     """
     从单个对象文件计算SDF
     :param path: 对象文件路径
@@ -159,11 +171,11 @@ def compute_sdf_from_single_mesh(mesh, num_points=20000, sampling='hybrid', std_
     mesh = scale(mesh)  # 缩放到[-0.5, 0.5]区间 
     #points = spherical_shell_sampling(mesh, num_points=num_points, layers=5)
     if sampling=='mesh':
-        points = uniform_grid_samples(mesh, resolution=50)
+        points = uniform_grid_samples(mesh, resolution=reso)
     elif sampling=='surface':
         points = surface_biased_samples(mesh, num_points=num_points, std_dev=std_dev)
     else:
-        points = hybrid_sampling(mesh, grid_res=30, surface_points=num_points, std_dev=std_dev)
+        points = hybrid_sampling(mesh, grid_res=reso, surface_points=num_points, std_dev=std_dev)
     sdf_values = compute_sdf_trimesh(mesh, points)
     ret_points = np.zeros_like(points)
     for target_axis in range(3):
@@ -311,6 +323,11 @@ class taxonomy_editor():
         """
         self.add_key(name, 'sdf', value=sdf_file_path)
                             
+
+
+
+
+        
 
 
 if __name__ == "__main__":
